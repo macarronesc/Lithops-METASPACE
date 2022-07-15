@@ -7,6 +7,8 @@ setup(name='Lithops-METASPACE',
       url='https://github.com/metaspace2020/Lithops-METASPACE',
       packages=find_packages(),
       install_requires=[
+          "s3fs",
+          "boto3",
           "lithops==2.2.16",
           # pandas version should match the version in the runtime to ensure data generated locally can be unpickled
           # in Lithops actions

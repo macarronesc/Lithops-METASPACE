@@ -63,7 +63,7 @@ lithops:
   data_limit: false
   
 serverless:
-  runtime: "metaspace2020/annotation-pipeline-runtime:1.0.0-ibmcf-python38"
+  runtime: "macarronesc0lithops/metaspace2020:01"
 ```
 
 #### Hybrid mode
@@ -80,10 +80,10 @@ lithops:
   data_limit: false
   
 serverless:
-  runtime: "metaspace2020/annotation-pipeline-runtime:1.0.0-ibmcf-python38"
+  runtime: "macarronesc0lithops/metaspace2020:01"
   
 standalone:
-  runtime: "metaspace2020/annotation-pipeline-runtime:1.0.0-ibmcf-python38"
+  runtime: "macarronesc0lithops/metaspace2020:01"
 ```
 
 ## 3. Running the pipeline

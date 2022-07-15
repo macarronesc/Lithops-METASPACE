@@ -1,8 +1,11 @@
 from collections import defaultdict
+
+import lithops.config
 import numpy as np
 import pandas as pd
 import sys
 import math
+import s3fs
 
 import requests
 from pyimzml.ImzMLParser import ImzMLParser
@@ -17,10 +20,15 @@ MAX_MZ_VALUE = 10 ** 5
 
 def get_imzml_reader(pw, imzml_cobject):
     def get_portable_imzml_reader(storage):
-        imzml_stream = storage.get_cloudobject(imzml_cobject, stream=True)
-        parser = ImzMLParser(imzml_stream, ibd_file=None)
-        imzml_reader = parser.portable_spectrum_reader()
-        imzml_reader_cobject = storage.put_cloudobject(serialise(imzml_reader))
+        fs = s3fs.S3FileSystem(anon=False, key=storage.get_storage_config().get(storage.backend).get("access_key_id"),
+                               secret=storage.get_storage_config().get(storage.backend).get("secret_access_key"))
+
+        # imzml_stream = storage.get_cloudobject(imzml_cobject, stream=True)
+        with fs.open(imzml_cobject.bucket + "/" + imzml_cobject.key, 'rb') as file:
+            parser = ImzMLParser(file, ibd_file=None)
+            imzml_reader = parser.portable_spectrum_reader()
+            imzml_reader_cobject = storage.put_cloudobject(serialise(imzml_reader))
+
         return imzml_reader, imzml_reader_cobject
 
     memory_capacity_mb = 1024
@@ -36,7 +44,8 @@ def get_spectra(storage, ibd_cobject, imzml_reader, sp_inds):
     mz_ends = mz_starts + np.array(imzml_reader.mzLengths)[sp_inds] * np.dtype(imzml_reader.mzPrecision).itemsize
     mz_ranges = np.stack([mz_starts, mz_ends], axis=1)
     int_starts = np.array(imzml_reader.intensityOffsets)[sp_inds]
-    int_ends = int_starts + np.array(imzml_reader.intensityLengths)[sp_inds] * np.dtype(imzml_reader.intensityPrecision).itemsize
+    int_ends = int_starts + np.array(imzml_reader.intensityLengths)[sp_inds] * np.dtype(
+        imzml_reader.intensityPrecision).itemsize
     int_ranges = np.stack([int_starts, int_ends], axis=1)
     ranges_to_read = np.vstack([mz_ranges, int_ranges])
     data_ranges = read_ranges_from_url(storage, ibd_cobject, ranges_to_read)
@@ -180,7 +189,8 @@ def segment_spectra(pw, ds_chunks_cobjects, ds_segments_bounds, ds_segm_size_mb,
     )
     first_level_segms_cobjects = pw.get_result(first_futures)
     if not isinstance(first_futures, list): first_futures = [first_futures]
-    PipelineStats.append_func(first_futures, memory_mb=memory_capacity_mb, cloud_objects_n=len(first_futures) * len(ds_segments_bounds))
+    PipelineStats.append_func(first_futures, memory_mb=memory_capacity_mb,
+                              cloud_objects_n=len(first_futures) * len(ds_segments_bounds))
 
     def merge_spectra_chunk_segments(segm_cobjects, id, storage):
         print(f'Merging segment {id} spectra chunks')
@@ -218,13 +228,15 @@ def segment_spectra(pw, ds_chunks_cobjects, ds_segments_bounds, ds_segm_size_mb,
     second_level_segms_cobjects = [(segm_cobjects,) for segm_cobjects in second_level_segms_cobjects]
 
     # same memory capacity
-    second_futures = pw.map(merge_spectra_chunk_segments, second_level_segms_cobjects, runtime_memory=memory_capacity_mb)
+    second_futures = pw.map(merge_spectra_chunk_segments, second_level_segms_cobjects,
+                            runtime_memory=memory_capacity_mb)
     ds_segms_len, ds_segms_cobjects = list(zip(*pw.get_result(second_futures)))
     ds_segms_len = list(np.concatenate(ds_segms_len))
     ds_segms_cobjects = list(np.concatenate(ds_segms_cobjects))
     PipelineStats.append_func(second_futures, memory_mb=memory_capacity_mb, cloud_objects_n=ds_segm_n)
 
-    assert len(ds_segms_cobjects) == len(set(co.key for co in ds_segms_cobjects)), 'Duplicate CloudObjects in ds_segms_cobjects'
+    assert len(ds_segms_cobjects) == len(
+        set(co.key for co in ds_segms_cobjects)), 'Duplicate CloudObjects in ds_segms_cobjects'
 
     pw.clean(cs=np.concatenate(first_level_segms_cobjects).tolist())
     return ds_segms_cobjects, ds_segms_len
@@ -277,7 +289,8 @@ def define_centr_segments(pw, clip_centr_chunks_cobjects, centr_n, ds_segm_n, ds
     segm_bounds_q = [i * 1 / centr_segm_n for i in range(0, centr_segm_n)]
     centr_segm_lower_bounds = np.quantile(first_peak_df_mz, segm_bounds_q)
 
-    logger.info(f'Generated {len(centr_segm_lower_bounds)} centroids bounds: {centr_segm_lower_bounds[0]}...{centr_segm_lower_bounds[-1]}')
+    logger.info(
+        f'Generated {len(centr_segm_lower_bounds)} centroids bounds: {centr_segm_lower_bounds[0]}...{centr_segm_lower_bounds[-1]}')
     return centr_segm_lower_bounds
 
 
@@ -321,7 +334,7 @@ def segment_centroids(pw, clip_centr_chunks_cobjects, centr_segm_lower_bounds, d
     )
     first_level_segms_cobjects = pw.get_result(first_futures)
     PipelineStats.append_func(first_futures, memory_mb=memory_capacity_mb,
-                                cloud_objects_n=len(first_futures) * len(centr_segm_lower_bounds))
+                              cloud_objects_n=len(first_futures) * len(centr_segm_lower_bounds))
 
     def merge_centr_df_segments(segm_cobjects, id, storage):
         print(f'Merging segment {id} clipped centroids chunks')
@@ -388,14 +401,16 @@ def segment_centroids(pw, clip_centr_chunks_cobjects, centr_segm_lower_bounds, d
     second_level_segms_cobjects = [(cobjects,) for segm_i, cobjects in second_level_segms_cobjects]
 
     first_level_cobjs = [co for cos in first_level_segms_cobjects for co in cos.values()]
-    assert len(first_level_cobjs) == len(set(co.key for co in first_level_cobjs)), 'Duplicate CloudObject key in first_level_segms_cobjects'
+    assert len(first_level_cobjs) == len(
+        set(co.key for co in first_level_cobjs)), 'Duplicate CloudObject key in first_level_segms_cobjects'
 
     memory_capacity_mb = 2048
     second_futures = pw.map(merge_centr_df_segments, second_level_segms_cobjects, runtime_memory=memory_capacity_mb)
     db_segms_cobjects = list(np.concatenate(pw.get_result(second_futures)))
     PipelineStats.append_func(second_futures, memory_mb=memory_capacity_mb, cloud_objects_n=centr_segm_n)
 
-    assert len(db_segms_cobjects) == len(set(co.key for co in db_segms_cobjects)), 'Duplicate CloudObject key in db_segms_cobjects'
+    assert len(db_segms_cobjects) == len(
+        set(co.key for co in db_segms_cobjects)), 'Duplicate CloudObject key in db_segms_cobjects'
 
     pw.clean(cs=first_level_cobjs)
     return db_segms_cobjects
@@ -450,7 +465,8 @@ def validate_centroid_segments(pw, db_segms_cobjects, ds_segms_bounds, ppm):
         # Report cases with fewer peaks than expected (indication that formulas are being split between multiple segments)
         wrong_n_peaks = stats_df[(stats_df.avg_n_peaks < 3.8) | (stats_df.min_n_peaks < 2) | (stats_df.max_n_peaks > 4)]
         if not wrong_n_peaks.empty:
-            logger.warning('segment_centroids produced segments with unexpected peaks-per-formula (should be almost always 4, occasionally 2 or 3):')
+            logger.warning(
+                'segment_centroids produced segments with unexpected peaks-per-formula (should be almost always 4, occasionally 2 or 3):')
             logger.warning(wrong_n_peaks)
 
         # Report missing peaks
@@ -468,9 +484,10 @@ def validate_centroid_segments(pw, db_segms_cobjects, ds_segms_bounds, ppm):
     formula_in_segms_df = pd.DataFrame([
         (formula_i, segm_i) for segm_i, formula_is in enumerate(segm_formula_is)
         for formula_i in formula_is
-    ], columns=['formula_i','segm_i'])
+    ], columns=['formula_i', 'segm_i'])
     formulas_in_multiple_segms = (formula_in_segms_df.groupby('formula_i').segm_i.count() > 1)[lambda s: s].index
-    formulas_in_multiple_segms_df = formula_in_segms_df[lambda df: df.formula_i.isin(formulas_in_multiple_segms)].sort_values('formula_i')
+    formulas_in_multiple_segms_df = formula_in_segms_df[
+        lambda df: df.formula_i.isin(formulas_in_multiple_segms)].sort_values('formula_i')
 
     if not formulas_in_multiple_segms_df.empty:
         logger.warning('segment_centroids produced put the same formula in multiple segments:')
@@ -521,4 +538,5 @@ def validate_ds_segments(pw, imzml_reader, ds_segments_bounds, ds_segms_cobjects
         total_len = segms_df.n_rows.sum()
         expected_total_len = np.sum(imzml_reader.mzLengths)
         if total_len != expected_total_len:
-            logger.warning(f'segment_spectra output {total_len} peaks, but the imzml file contained {expected_total_len}')
+            logger.warning(
+                f'segment_spectra output {total_len} peaks, but the imzml file contained {expected_total_len}')
